@@ -7,7 +7,7 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
-        CREATE TABLE IF NOT EXIST mood_logs (
+        CREATE TABLE IF NOT EXISTS mood_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
             emotion TEXT NOT NULL,
