@@ -1,14 +1,23 @@
 # 🎭 Real-Time AI Mood Tracker & Telemetry Dashboard
 
-An end-to-end computer vision and deep learning application that performs real-time facial emotion recognition using a Vision Transformer (ViT) model, stores time-stamped telemetry in an SQLite database, and visualizes mood trends through an interactive Streamlit web dashboard.
+An end-to-end computer vision and machine learning web application that performs real-time facial emotion recognition using a Vision Transformer (ViT) model. It stores time-stamped emotion telemetry in an SQLite database and visualizes live and historical mood trends through an interactive, unified Streamlit web dashboard.
+
+---
+
+## ✨ Features
+
+* **Real-Time Video Inference:** Asynchronous facial detection and emotion classification from a live webcam feed.
+* **State-of-the-Art AI:** Powered by a Hugging Face Vision Transformer (`dima806/facial_emotions_image_detection`) capable of classifying 7 distinct facial emotions with high accuracy.
+* **Unified Web Dashboard:** A single-page Streamlit application that renders live video alongside real-time analytical charts and metrics.
+* **Telemetry Persistence:** Continuous background logging of dominant emotions and confidence scores into a local SQLite database for historical tracking.
 
 ---
 
 ## ⚡ Tech Stack
 
 * **Language:** Python 3.10+
-* **Deep Learning Framework:** PyTorch & Hugging Face Transformers (`dima806/facial_emotions_image_detection`)
-* **Computer Vision:** OpenCV (Asynchronous multithreaded video ingestion & face tracking)
+* **Deep Learning Framework:** PyTorch & Hugging Face Transformers
+* **Computer Vision:** OpenCV (Haar Cascade face detection & video frame ingestion)
 * **Database:** SQLite3
 * **Dashboard & Visualization:** Streamlit, Pandas, Plotly Express
 
@@ -18,42 +27,9 @@ An end-to-end computer vision and deep learning application that performs real-t
 
 ```text
 mood-detection/
-├── app.py              # Main multi-threaded CV video stream & ViT inference engine
-├── dashboard.py        # Streamlit web interface for mood analytics
-├── database.py         # SQLite connection & logging module
-├── mood_tracker.db     # Local SQLite database (generated on first run)
+├── app.py              # Unified multi-threaded CV video stream & analytics dashboard
+├── database.py         # SQLite connection & telemetry logging module
+├── mood_tracker.db     # Local SQLite database (Auto-generated on first run)
 ├── requirements.txt    # Project dependencies
+├── .gitignore          # Git exclusion rules for large weights and local logs
 └── README.md           # Project documentation
-```
-
----
-
-## 🚀 Getting Started
-
-### 1. Clone & Setup Environment
-```bash
-git clone [https://github.com/your-username/ai-mood-tracker.git](https://github.com/your-username/ai-mood-tracker.git)
-cd ai-mood-tracker
-
-# Create & activate virtual environment
-python -m venv venv
-# On Windows:
-venv\Scripts\activate
-# On macOS/Linux:
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### 2. Run Real-Time AI Camera App
-```bash
-python app.py
-```
-*Press `q` to safely exit the camera feed.*
-
-### 3. Launch Analytics Dashboard
-```bash
-streamlit run dashboard.py
-```
-*Access the dashboard at `http://localhost:8501`.*
