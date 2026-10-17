@@ -1,201 +1,245 @@
 import os
-import threading
-import time
+import sqlite3
 import urllib.request
 
 import cv2
+import pandas as pd
+import plotly.express as px
+import streamlit as st
 import torch
 from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForImageClassification
 
 from database import init_db, log_mood
 
-# Initialize Database
+# Initialize SQLite Database
 init_db()
 
-# Select Computing Device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Running inference on device: {device}")
+# Page Setup
+st.set_page_config(page_title="AI Mood Tracker", page_icon="🎭", layout="wide")
+st.title("🎭 AI Mood Tracker — Unified Dashboard")
 
-# Load Vision Transformer
-MODEL_NAME = "dima806/facial_emotions_image_detection"
-print("Loading Vision Transformer model weights...")
 
-processor = AutoImageProcessor.from_pretrained(MODEL_NAME)
-model = AutoModelForImageClassification.from_pretrained(MODEL_NAME).to(device)
-model.eval()
+# Load Vision Transformer Model (Cached so it loads only once)
+@st.cache_resource
+def load_model():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_name = "dima806/facial_emotions_image_detection"
+    processor = AutoImageProcessor.from_pretrained(model_name)
+    model = AutoModelForImageClassification.from_pretrained(model_name).to(device)
+    model.eval()
+    return processor, model, device
 
-# Face Detector Cascade
+
+processor, model, device = load_model()
+
+# Load Haar Cascade
 CASCADE_FILE = "haarcascade_frontalface_default.xml"
 if not os.path.exists(CASCADE_FILE):
-    print("Downloading face detection model...")
     url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
     urllib.request.urlretrieve(url, CASCADE_FILE)
 
 face_cascade = cv2.CascadeClassifier(CASCADE_FILE)
 
-# Shared Thread Data
-latest_face_roi = None
-is_analyzing = False
-lock = threading.Lock()
 
-current_emotion = "Detecting..."
-emotion_confidence = 0.0
-top_emotions = []
+# Helper function to read database logs
+def fetch_logs():
+    try:
+        conn = sqlite3.connect("mood_tracker.db")
+        df = pd.read_sql_query("SELECT * FROM mood_logs ORDER BY id DESC", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
-ALPHA = 0.4
-smoothed_scores = {}
 
+# Sidebar Controls
+st.sidebar.header("🕹️ Controls")
+run_camera = st.sidebar.checkbox("Start Live Camera Detection", value=False)
 
-# Background Worker Thread for Heavy PyTorch Inference
-def run_inference_worker():
-    global \
-        latest_face_roi, \
-        is_analyzing, \
-        current_emotion, \
-        emotion_confidence, \
-        top_emotions, \
-        smoothed_scores
+# Main App Layout (2 Columns)
+col_left, col_right = st.columns([3, 2])
 
-    while True:
-        roi_to_process = None
+with col_left:
+    st.subheader("📹 Live Camera Feed & Detection")
+    frame_placeholder = st.empty()
 
-        with lock:
-            if latest_face_roi is not None and not is_analyzing:
-                roi_to_process = latest_face_roi.copy()
-                is_analyzing = True
+with col_right:
+    st.subheader("📊 Real-Time Metrics")
+    kpi1, kpi2 = st.columns(2)
+    metric_mood = kpi1.empty()
+    metric_conf = kpi2.empty()
 
-        if roi_to_process is not None:
-            try:
-                pil_image = Image.fromarray(roi_to_process)
-                inputs = processor(images=pil_image, return_tensors="pt").to(device)
+    chart_placeholder = st.empty()
 
-                with torch.no_grad():
-                    outputs = model(**inputs)
-                    probabilities = torch.softmax(outputs.logits, dim=-1)[0]
+st.divider()
 
-                raw_scores = {}
-                for idx, prob in enumerate(probabilities):
-                    label = model.config.id2label[idx].capitalize()
-                    raw_scores[label] = float(prob.item() * 100.0)
+# Historical Analytics Section
+st.subheader("📈 Historical Mood Telemetry")
+hist_col1, hist_col2 = st.columns(2)
+line_chart_placeholder = hist_col1.empty()
+pie_chart_placeholder = hist_col2.empty()
 
-                # Exponential Moving Average Smoothing
-                if not smoothed_scores:
-                    smoothed_scores = raw_scores
-                else:
-                    for k, v in raw_scores.items():
-                        smoothed_scores[k] = (ALPHA * v) + (
-                            (1 - ALPHA) * smoothed_scores.get(k, v)
-                        )
+# Unified Loop: Camera Processing + Live Dashboard Updates
+if run_camera:
+    cap = cv2.VideoCapture(0)
 
-                sorted_emotions = sorted(
-                    smoothed_scores.items(), key=lambda item: item[1], reverse=True
+    # Session state to smooth predictions
+    if "smoothed_scores" not in st.session_state:
+        st.session_state.smoothed_scores = {}
+
+    ALPHA = 0.4
+    frame_count = 0
+
+    while run_camera:
+        ret, frame = cap.read()
+        if not ret:
+            st.error("Unable to access camera feed.")
+            break
+
+        frame = cv2.flip(frame, 1)
+        frame_h, frame_w, _ = frame.shape
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        faces = face_cascade.detectMultiScale(
+            gray_frame, scaleFactor=1.1, minNeighbors=6, minSize=(120, 120)
+        )
+
+        if len(faces) > 0:
+            # Pick largest face
+            primary_face = max(faces, key=lambda rect: rect[2] * rect[3])
+            x, y, w, h = primary_face
+
+            top = max(0, y - 40)
+            bottom = min(frame_h, y + h + 40)
+            left = max(0, x - 40)
+            right = min(frame_w, x + w + 40)
+
+            face_roi = rgb_frame[top:bottom, left:right]
+
+            # Run PyTorch Model Inference every 2 frames
+            if frame_count % 2 == 0:
+                try:
+                    pil_image = Image.fromarray(face_roi)
+                    inputs = processor(images=pil_image, return_tensors="pt").to(device)
+
+                    with torch.no_grad():
+                        outputs = model(**inputs)
+                        probs = torch.softmax(outputs.logits, dim=-1)[0]
+
+                    raw_scores = {}
+                    for idx, prob in enumerate(probs):
+                        label = model.config.id2label[idx].capitalize()
+                        raw_scores[label] = float(prob.item() * 100.0)
+
+                    # Smoothing
+                    if not st.session_state.smoothed_scores:
+                        st.session_state.smoothed_scores = raw_scores
+                    else:
+                        for k, v in raw_scores.items():
+                            st.session_state.smoothed_scores[k] = (ALPHA * v) + (
+                                (1 - ALPHA) * st.session_state.smoothed_scores.get(k, v)
+                            )
+
+                    sorted_emotions = sorted(
+                        st.session_state.smoothed_scores.items(),
+                        key=lambda i: i[1],
+                        reverse=True,
+                    )
+                    dom_emo, conf = sorted_emotions[0]
+
+                    # Log to Database
+                    if conf > 25.0:
+                        log_mood(dom_emo, round(conf, 2))
+
+                    # Update Live KPI Display
+                    metric_mood.metric("Current Mood", dom_emo)
+                    metric_conf.metric("Confidence", f"{conf:.1f}%")
+
+                except Exception:
+                    pass
+
+            # Draw Bounding Box on Frame
+            cv2.rectangle(rgb_frame, (x, y), (x + w, y + h), (0, 255, 128), 2)
+            cv2.putText(
+                rgb_frame,
+                f"{dom_emo} ({conf:.1f}%)",
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 128),
+                2,
+            )
+
+        # Render Live Video Frame directly in Streamlit
+        frame_placeholder.image(rgb_frame, channels="RGB", use_container_width=True)
+
+        # Refresh Charts every 10 frames (~0.3 seconds)
+        if frame_count % 10 == 0:
+            df = fetch_logs()
+            if not df.empty:
+                # Top emotions breakdown bar chart
+                top_3 = sorted_emotions[:3]
+                df_top3 = pd.DataFrame(top_3, columns=["Emotion", "Confidence (%)"])
+                fig_bar = px.bar(
+                    df_top3,
+                    x="Emotion",
+                    y="Confidence (%)",
+                    color="Emotion",
+                    height=250,
                 )
-                dom_emo, conf = sorted_emotions[0]
+                chart_placeholder.plotly_chart(fig_bar, use_container_width=True)
 
-                with lock:
-                    current_emotion = dom_emo
-                    emotion_confidence = conf
-                    top_emotions = [(e, f"{s:.1f}") for e, s in sorted_emotions[:3]]
+                # Historical Line Chart
+                fig_line = px.line(
+                    df.head(50),
+                    x="timestamp",
+                    y="confidence",
+                    color="emotion",
+                    title="Recent Telemetry",
+                )
+                line_chart_placeholder.plotly_chart(fig_line, use_container_width=True)
 
-                if conf > 25.0:
-                    log_mood(dom_emo, round(conf, 2))
-            except Exception:
-                pass
-            finally:
-                with lock:
-                    is_analyzing = False
+                # Overall Pie Chart
+                mood_counts = df["emotion"].value_counts().reset_index()
+                mood_counts.columns = ["Emotion", "Count"]
+                fig_pie = px.pie(
+                    mood_counts,
+                    names="Emotion",
+                    values="Count",
+                    hole=0.4,
+                    title="Overall Distribution",
+                )
+                pie_chart_placeholder.plotly_chart(fig_pie, use_container_width=True)
 
-        time.sleep(0.03)  # Yield CPU to main rendering thread
+        frame_count += 1
 
-
-# Start Inference Thread in Background
-worker = threading.Thread(target=run_inference_worker, daemon=True)
-worker.start()
-
-# Main Video Capture Loop (30+ FPS Smooth Video)
-cap = cv2.VideoCapture(0)
-
-print("High-Accuracy Async Mood Tracker running at 30+ FPS! Press 'q' to stop.")
-
-while cap.isOpened():
-    ret, frame = cap.read()
-    if not ret:
-        break
-
-    frame = cv2.flip(frame, 1)
-    frame_h, frame_w, _ = frame.shape
-    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    faces = face_cascade.detectMultiScale(
-        gray_frame, scaleFactor=1.1, minNeighbors=6, minSize=(120, 120)
+    cap.release()
+else:
+    frame_placeholder.info(
+        "Click **Start Live Camera Detection** in the sidebar to launch the camera feed."
     )
 
-    if len(faces) > 0:
-        primary_face = max(faces, key=lambda rect: rect[2] * rect[3])
-        x, y, w, h = primary_face
-
-        top = max(0, y - 40)
-        bottom = min(frame_h, y + h + 40)
-        left = max(0, x - 40)
-        right = min(frame_w, x + w + 40)
-
-        face_roi = rgb_frame[top:bottom, left:right]
-
-        # Send cropped face to background worker thread if free
-        with lock:
-            if not is_analyzing:
-                latest_face_roi = face_roi
-
-        # Render bounding box
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 128), 2)
-        cv2.putText(
-            frame,
-            f"{current_emotion} ({emotion_confidence:.1f}%)",
-            (x, y - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 128),
-            2,
+    # Display static historical charts when camera is off
+    df = fetch_logs()
+    if not df.empty:
+        fig_line = px.line(
+            df.head(100),
+            x="timestamp",
+            y="confidence",
+            color="emotion",
+            title="Recent Telemetry Stream",
         )
+        line_chart_placeholder.plotly_chart(fig_line, use_container_width=True)
 
-    # Render HUD Card
-    cv2.rectangle(frame, (20, 20), (360, 140), (0, 0, 0), -1)
-    cv2.rectangle(frame, (20, 20), (360, 140), (0, 255, 128), 1)
-
-    with lock:
-        disp_emotion = current_emotion
-        disp_conf = emotion_confidence
-        disp_top = list(top_emotions)
-
-    cv2.putText(
-        frame,
-        f"Primary: {disp_emotion} ({disp_conf:.1f}%)",
-        (35, 50),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.6,
-        (255, 255, 255),
-        2,
-    )
-
-    y_offset = 75
-    for emo_name, emo_score_str in disp_top:
-        cv2.putText(
-            frame,
-            f"- {emo_name}: {emo_score_str}%",
-            (35, y_offset),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (180, 180, 180),
-            1,
+        mood_counts = df["emotion"].value_counts().reset_index()
+        mood_counts.columns = ["Emotion", "Count"]
+        fig_pie = px.pie(
+            mood_counts,
+            names="Emotion",
+            values="Count",
+            hole=0.4,
+            title="Overall Distribution",
         )
-        y_offset += 20
-
-    cv2.imshow("High-Accuracy Async Mood Tracker - PyTorch ViT", frame)
-
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
-
-cap.release()
-cv2.destroyAllWindows()
+        pie_chart_placeholder.plotly_chart(fig_pie, use_container_width=True)
