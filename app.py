@@ -1,7 +1,7 @@
 import os
-import sqlite3
+import time
 import urllib.request
-
+import sqlite3
 import cv2
 import pandas as pd
 import plotly.express as px
@@ -9,7 +9,6 @@ import streamlit as st
 import torch
 from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForImageClassification
-
 from database import init_db, log_mood
 
 # Initialize SQLite Database
@@ -19,8 +18,7 @@ init_db()
 st.set_page_config(page_title="AI Mood Tracker", page_icon="🎭", layout="wide")
 st.title("🎭 AI Mood Tracker — Unified Dashboard")
 
-
-# Load Vision Transformer Model (Cached so it loads only once)
+# Load Vision Transformer Model
 @st.cache_resource
 def load_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -30,10 +28,9 @@ def load_model():
     model.eval()
     return processor, model, device
 
-
 processor, model, device = load_model()
 
-# Load Haar Cascade
+# Load Haar Cascade Face Detector
 CASCADE_FILE = "haarcascade_frontalface_default.xml"
 if not os.path.exists(CASCADE_FILE):
     url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
@@ -41,8 +38,6 @@ if not os.path.exists(CASCADE_FILE):
 
 face_cascade = cv2.CascadeClassifier(CASCADE_FILE)
 
-
-# Helper function to read database logs
 def fetch_logs():
     try:
         conn = sqlite3.connect("mood_tracker.db")
@@ -52,12 +47,11 @@ def fetch_logs():
     except Exception:
         return pd.DataFrame()
 
-
 # Sidebar Controls
 st.sidebar.header("🕹️ Controls")
 run_camera = st.sidebar.checkbox("Start Live Camera Detection", value=False)
 
-# Main App Layout (2 Columns)
+# Main App Layout
 col_left, col_right = st.columns([3, 2])
 
 with col_left:
@@ -80,16 +74,24 @@ hist_col1, hist_col2 = st.columns(2)
 line_chart_placeholder = hist_col1.empty()
 pie_chart_placeholder = hist_col2.empty()
 
-# Unified Loop: Camera Processing + Live Dashboard Updates
+# Camera Loop & Real-Time Analytics
 if run_camera:
     cap = cv2.VideoCapture(0)
 
-    # Session state to smooth predictions
     if "smoothed_scores" not in st.session_state:
         st.session_state.smoothed_scores = {}
 
     ALPHA = 0.4
-    frame_count = 0
+    last_inference_time = 0
+    INFERENCE_INTERVAL = 0.35
+
+    last_chart_time = 0
+    CHART_INTERVAL = 1.0
+    chart_counter = 0  # Dynamic counter prevents Streamlit duplicate key crashes
+
+    dom_emo = "Detecting..."
+    conf = 0.0
+    sorted_emotions = []
 
     while run_camera:
         ret, frame = cap.read()
@@ -102,12 +104,9 @@ if run_camera:
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        faces = face_cascade.detectMultiScale(
-            gray_frame, scaleFactor=1.1, minNeighbors=6, minSize=(120, 120)
-        )
+        faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=6, minSize=(120, 120))
 
         if len(faces) > 0:
-            # Pick largest face
             primary_face = max(faces, key=lambda rect: rect[2] * rect[3])
             x, y, w, h = primary_face
 
@@ -118,8 +117,9 @@ if run_camera:
 
             face_roi = rgb_frame[top:bottom, left:right]
 
-            # Run PyTorch Model Inference every 2 frames
-            if frame_count % 2 == 0:
+            # Inference pass
+            current_time = time.time()
+            if current_time - last_inference_time > INFERENCE_INTERVAL:
                 try:
                     pil_image = Image.fromarray(face_roi)
                     inputs = processor(images=pil_image, return_tensors="pt").to(device)
@@ -133,113 +133,68 @@ if run_camera:
                         label = model.config.id2label[idx].capitalize()
                         raw_scores[label] = float(prob.item() * 100.0)
 
-                    # Smoothing
                     if not st.session_state.smoothed_scores:
                         st.session_state.smoothed_scores = raw_scores
                     else:
                         for k, v in raw_scores.items():
-                            st.session_state.smoothed_scores[k] = (ALPHA * v) + (
-                                (1 - ALPHA) * st.session_state.smoothed_scores.get(k, v)
-                            )
+                            st.session_state.smoothed_scores[k] = (ALPHA * v) + ((1 - ALPHA) * st.session_state.smoothed_scores.get(k, v))
 
-                    sorted_emotions = sorted(
-                        st.session_state.smoothed_scores.items(),
-                        key=lambda i: i[1],
-                        reverse=True,
-                    )
+                    sorted_emotions = sorted(st.session_state.smoothed_scores.items(), key=lambda i: i[1], reverse=True)
                     dom_emo, conf = sorted_emotions[0]
 
-                    # Log to Database
                     if conf > 25.0:
                         log_mood(dom_emo, round(conf, 2))
 
-                    # Update Live KPI Display
                     metric_mood.metric("Current Mood", dom_emo)
                     metric_conf.metric("Confidence", f"{conf:.1f}%")
+
+                    last_inference_time = current_time
 
                 except Exception:
                     pass
 
-            # Draw Bounding Box on Frame
-            cv2.rectangle(rgb_frame, (x, y), (x + w, y + h), (0, 255, 128), 2)
-            cv2.putText(
-                rgb_frame,
-                f"{dom_emo} ({conf:.1f}%)",
-                (x, y - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 128),
-                2,
-            )
+            cv2.rectangle(rgb_frame, (x, y), (x+w, y+h), (0, 255, 128), 2)
+            cv2.putText(rgb_frame, f"{dom_emo} ({conf:.1f}%)", (x, y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 128), 2)
 
-        # Render Live Video Frame directly in Streamlit
-        frame_placeholder.image(rgb_frame, channels="RGB", use_container_width=True)
+        # Frame continuously renders without crashing
+        frame_placeholder.image(rgb_frame, channels="RGB", width="stretch")
 
-        # Refresh Charts every 10 frames (~0.3 seconds)
-        if frame_count % 10 == 0:
+        # Dynamic UI Chart Refresh
+        current_time = time.time()
+        if current_time - last_chart_time > CHART_INTERVAL:
             df = fetch_logs()
             if not df.empty:
-                # Top emotions breakdown bar chart
-                top_3 = sorted_emotions[:3]
-                df_top3 = pd.DataFrame(top_3, columns=["Emotion", "Confidence (%)"])
-                fig_bar = px.bar(
-                    df_top3,
-                    x="Emotion",
-                    y="Confidence (%)",
-                    color="Emotion",
-                    height=250,
-                )
-                chart_placeholder.plotly_chart(fig_bar, use_container_width=True)
+                chart_counter += 1  # Ensures keys are 100% unique every loop iteration
 
-                # Historical Line Chart
-                fig_line = px.line(
-                    df.head(50),
-                    x="timestamp",
-                    y="confidence",
-                    color="emotion",
-                    title="Recent Telemetry",
-                )
-                line_chart_placeholder.plotly_chart(fig_line, use_container_width=True)
+                if sorted_emotions:
+                    top_3 = sorted_emotions[:3]
+                    df_top3 = pd.DataFrame(top_3, columns=["Emotion", "Confidence (%)"])
+                    fig_bar = px.bar(df_top3, x="Emotion", y="Confidence (%)", color="Emotion", height=250)
+                    chart_placeholder.plotly_chart(fig_bar, width="stretch", key=f"bar_{chart_counter}")
 
-                # Overall Pie Chart
+                fig_line = px.line(df.head(50), x="timestamp", y="confidence", color="emotion", title="Recent Telemetry Stream")
+                line_chart_placeholder.plotly_chart(fig_line, width="stretch", key=f"line_{chart_counter}")
+
                 mood_counts = df["emotion"].value_counts().reset_index()
                 mood_counts.columns = ["Emotion", "Count"]
-                fig_pie = px.pie(
-                    mood_counts,
-                    names="Emotion",
-                    values="Count",
-                    hole=0.4,
-                    title="Overall Distribution",
-                )
-                pie_chart_placeholder.plotly_chart(fig_pie, use_container_width=True)
+                fig_pie = px.pie(mood_counts, names="Emotion", values="Count", hole=0.4, title="Overall Distribution")
+                pie_chart_placeholder.plotly_chart(fig_pie, width="stretch", key=f"pie_{chart_counter}")
 
-        frame_count += 1
+            last_chart_time = current_time
+
+        time.sleep(0.01)
 
     cap.release()
 else:
-    frame_placeholder.info(
-        "Click **Start Live Camera Detection** in the sidebar to launch the camera feed."
-    )
+    frame_placeholder.info("Click **Start Live Camera Detection** in the sidebar to launch the camera feed.")
 
-    # Display static historical charts when camera is off
     df = fetch_logs()
     if not df.empty:
-        fig_line = px.line(
-            df.head(100),
-            x="timestamp",
-            y="confidence",
-            color="emotion",
-            title="Recent Telemetry Stream",
-        )
-        line_chart_placeholder.plotly_chart(fig_line, use_container_width=True)
+        fig_line = px.line(df.head(100), x="timestamp", y="confidence", color="emotion", title="Recent Telemetry Stream")
+        line_chart_placeholder.plotly_chart(fig_line, width="stretch", key="static_line_chart")
 
         mood_counts = df["emotion"].value_counts().reset_index()
         mood_counts.columns = ["Emotion", "Count"]
-        fig_pie = px.pie(
-            mood_counts,
-            names="Emotion",
-            values="Count",
-            hole=0.4,
-            title="Overall Distribution",
-        )
-        pie_chart_placeholder.plotly_chart(fig_pie, use_container_width=True)
+        fig_pie = px.pie(mood_counts, names="Emotion", values="Count", hole=0.4, title="Overall Distribution")
+        pie_chart_placeholder.plotly_chart(fig_pie, width="stretch", key="static_pie_chart")

@@ -1,28 +1,31 @@
 import sqlite3
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Page configuration
+# Page Configuration
 st.set_page_config(
-    page_title="AI Mood Detection Dashboard",
-    page_icon="🎭",
-    layout="wide"
+    page_title="AI Mood Tracker Dashboard", page_icon="🎭", layout="wide"
 )
 
-st.title("🎭 AI Mood Detection - Analytics Dashboard")
-st.caption("Real-time telemetry and mood trend analytics extracted from mood_tracker.db")
+st.title("🎭 AI Mood Tracker — Analytics Dashboard")
+st.caption(
+    "Real-time telemetry and mood trend analytics extracted from mood_tracker.db"
+)
+
 
 def load_data():
     try:
         conn = sqlite3.connect("mood_tracker.db")
-        df = pd.read_sql_query("SELECT * FROM mood_logs", conn)
+        df = pd.read_sql_query("SELECT * FROM mood_logs ORDER BY id DESC", conn)
         conn.close()
         if not df.empty:
             df["timestamp"] = pd.to_datetime(df["timestamp"])
         return df
     except Exception:
         return pd.DataFrame()
+
 
 df = load_data()
 
@@ -31,7 +34,9 @@ if st.button("🔄 Refresh Data"):
     st.rerun()
 
 if df.empty:
-    st.warning("No logs found in `mood_tracker.db` yet. Run `python app.py` and sit in front of the camera to generate records!")
+    st.warning(
+        "No logs found in `mood_tracker.db` yet. Run `python app.py` and sit in front of the camera to generate records!"
+    )
 else:
     # 1. KPI Metric Summary Cards
     col1, col2, col3, col4 = st.columns(4)
@@ -39,14 +44,22 @@ else:
     total_logs = len(df)
     dominant_mood = df["emotion"].mode()[0] if not df.empty else "N/A"
     avg_confidence = df["confidence"].mean() if not df.empty else 0.0
-    latest_entry = df.iloc[-1] if not df.empty else None
+    latest_entry = df.iloc[0] if not df.empty else None
 
-st.divider()
+    col1.metric("Total Detections", f"{total_logs:,}")
+    col2.metric("Dominant Mood", dominant_mood)
+    col3.metric("Avg Confidence", f"{avg_confidence:.1f}%")
+    col4.metric(
+        "Latest Logged Mood",
+        latest_entry["emotion"] if latest_entry is not None else "N/A",
+    )
 
-# Graphical Analytics Layout
-col_left, col_right = st.columns(2)
+    st.divider()
 
-with col_left:
+    # 2. Graphical Analytics Layout
+    col_left, col_right = st.columns(2)
+
+    with col_left:
         st.subheader("Overall Mood Distribution")
         mood_counts = df["emotion"].value_counts().reset_index()
         mood_counts.columns = ["Emotion", "Count"]
@@ -56,11 +69,11 @@ with col_left:
             names="Emotion",
             values="Count",
             hole=0.4,
-            color_discrete_sequence=px.colors.qualitative.Pastel
+            color_discrete_sequence=px.colors.qualitative.Pastel,
         )
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width="stretch")
 
-with col_right:
+    with col_right:
         st.subheader("Average Confidence Score Per Mood")
         avg_conf_df = df.groupby("emotion")["confidence"].mean().reset_index()
 
@@ -70,26 +83,27 @@ with col_right:
             y="confidence",
             color="emotion",
             labels={"emotion": "Emotion", "confidence": "Avg Confidence (%)"},
-            color_discrete_sequence=px.colors.qualitative.Set2
+            color_discrete_sequence=px.colors.qualitative.Set2,
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
 
-# Time Series Detection Plot
-st.subheader("Mood Telemetry Timeline")
-fig_line = px.line(
-    df,
-    x="timestamp",
-    y="confidence",
-    color="emotion",
-    markers=True,
-    labels={"timestamp": "Time", "confidence": "Confidence (%)", "emotion": "Detected Mood"},
-    title="Recorded Mood Detection Stream Over Time"
-)
-st.plotly_chart(fig_line, use_container_width=True)
+    # 3. Time Series Detection Plot
+    st.subheader("Mood Telemetry Timeline")
+    fig_line = px.line(
+        df.head(100),
+        x="timestamp",
+        y="confidence",
+        color="emotion",
+        markers=True,
+        labels={
+            "timestamp": "Time",
+            "confidence": "Confidence (%)",
+            "emotion": "Detected Mood",
+        },
+        title="Recorded Mood Detection Stream Over Time",
+    )
+    st.plotly_chart(fig_line, width="stretch")
 
-# Raw Records Table
-with st.expander("📁 View Raw Database Logs"):
-        st.dataframe(
-            df.sort_values(by="timestamp", ascending=False),
-            use_container_width=True
-        )
+    # 4. Raw Records Table
+    with st.expander("📁 View Raw Database Logs"):
+        st.dataframe(df, width="stretch")
