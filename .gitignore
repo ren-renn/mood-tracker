@@ -1,1 +1,38 @@
-.venv
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Local SQLite Database
+*.db
+*.sqlite
+*.sqlite3
+mood_tracker.db
+
+# Machine Learning Weights & Cascades
+*.h5
+*.safetensors
+*.bin
+*.onnx
+*.xml
+haarcascade_frontalface_default.xml
+.cache/
+
+# IDE & Editor Settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# Streamlit Local Configurations
+.streamlit/secrets.toml
