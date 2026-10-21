@@ -1,10 +1,10 @@
-# 🎭 Real-Time AI Mood Tracker & Telemetry Dashboard
+# Real-Time AI Mood Tracker & Telemetry Dashboard
 
 An end-to-end computer vision and machine learning web application that performs real-time facial emotion recognition using a Vision Transformer (ViT) model. It stores time-stamped emotion telemetry in an SQLite database and visualizes live and historical mood trends through an interactive, unified Streamlit web dashboard.
 
 ---
 
-## ✨ Features
+## Features
 
 * **Real-Time Video Inference:** Asynchronous facial detection and emotion classification from a live webcam feed.
 * **State-of-the-Art AI:** Powered by a Hugging Face Vision Transformer (`dima806/facial_emotions_image_detection`) capable of classifying 7 distinct facial emotions with high accuracy.
@@ -13,7 +13,7 @@ An end-to-end computer vision and machine learning web application that performs
 
 ---
 
-## ⚡ Tech Stack
+## Tech Stack
 
 * **Language:** Python 3.10+
 * **Deep Learning Framework:** PyTorch & Hugging Face Transformers
@@ -23,7 +23,7 @@ An end-to-end computer vision and machine learning web application that performs
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```text
 mood-detection/
